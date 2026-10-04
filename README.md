@@ -7,6 +7,8 @@ the streaming graph, the RTTI type system and the object/pointer/link model.
 It is a *reader*, not a re-implementation of the GUI. Its output is meant to be
 **byte-identical** to odradek's own JSON export, and that is what it is tested against.
 
+[中文说明](#中文说明) · [状态](#status) · [构建](#build) · [用法](#usage) · [性能](#performance) · [已知限制](#known-limitations) · [许可](#license)
+
 ## Status
 
 | Type | Verified against odradek's export |
@@ -118,3 +120,118 @@ See `LICENSE`.
 
 The type definitions in `Data/` originate from the game and are redistributed the same way odradek
 redistributes them.
+
+---
+
+# 中文说明
+
+## 这是什么
+
+把 [ShadelessFox/odradek](https://github.com/ShadelessFox/odradek)（Java）里**读取部分**移植到 C# / .NET 10：
+直接解析 **《死亡搁浅 2：冥滩之上》**（Decima 引擎 DS2 分支）的游戏数据 —— streaming graph、
+RTTI 类型系统、对象/指针/link 模型。
+
+它是一个**读取器**，不是 GUI 的复刻。衡量标准只有一条：导出的 JSON 与 odradek 自己的导出**逐字节相同**。
+
+## 状态
+
+| 类型 | 与 odradek 导出比对 |
+|---|---|
+| `WwiseWemResource` | 400/400、7,816/7,816 逐字节相同 |
+| `WwiseID` | 401/401 逐字节相同 |
+| `WwiseBankResource` | 74/74 逐字节相同 |
+| `GraphSoundResource` | 394/400 |
+| `GraphProgramResource` | 395/401 |
+| `NodeConstantsResource` | 390/401 |
+
+剩下的差异全部出现在**含指针**的对象上，且成因只有一个（见下面"已知限制"第 2 条）。
+
+## 环境要求
+
+* .NET 10 SDK
+* 一份《死亡搁浅 2》游戏本体（读取 `LocalCacheWinGame\package\streaming_graph.core`、
+  各 `package.*.core.stream` 与 `streaming_links.stream`）
+* `Data/types.json` 与 `Data/extensions.json` —— RTTI 类型定义。放在仓库里，是因为 odradek 也是这么做的：
+  它从游戏里提取这两个文件并提交在自己的仓库（`odradek-game-ds2/src/main/resources`）。
+
+## 构建
+
+```
+dotnet build -c Release
+# -> bin/Release/net10.0/odradeksharp.exe
+```
+
+## 用法
+
+```
+odradeksharp info    <游戏目录>                              图统计信息
+odradeksharp groups  <游戏目录> [--limit N]                  列出所有组
+odradeksharp types   <游戏目录> [--limit N]                  列出类型及对象数量
+odradeksharp find    <游戏目录> <类型> [--exact] [--limit N]  定位某类型的对象
+odradeksharp read    <游戏目录> <组>:<下标> [--json] [--out 文件] [--no-subgroups]
+odradeksharp group   <游戏目录> <组号>                       组的元数据（span / 子组 / 类型表）
+odradeksharp trace   <游戏目录> <组>:<下标>                   逐对象的流内偏移
+odradeksharp hex     <游戏目录> <文件> <偏移> <长度>           原始字节
+odradeksharp rtti    <游戏目录>                              类型工厂统计
+odradeksharp dump    <游戏目录> <类型> --out <目录> [--exact] [--no-subgroups] [--threads N] [--limit N]
+```
+
+例：导出全部 `WwiseWemResource`：
+
+```
+odradeksharp dump "K:\...\DEATH STRANDING 2 - ON THE BEACH" WwiseWemResource ^
+    --out out --exact --no-subgroups
+```
+
+## 性能
+
+单机实测（游戏数据在本地 SSD，4 线程）：
+
+| 任务 | 耗时 | 峰值内存 |
+|---|---|---|
+| 全部 7,838 个 `WwiseWemResource` | ~30 s | ~4.9 GB |
+| 400 个 `GraphSoundResource`（38 个组） | 0.6 s | ~1.0 GB |
+| 400 个 `WwiseID`（48 个组） | 0.3 s | ~0.9 GB |
+| `read 组 499 对象 1173`（组 499 = 124,219 个对象，单个 286 MB span） | 1.2 s | ~1.4 GB |
+
+时间到底花在哪：
+
+* 对象在流里**没有偏移表**，要取第 *k* 个对象就必须顺序解析 `0..k`。和 odradek 一样，目前是整组解析。
+* 所以成本取决于**你碰了哪些组**，而不是你要几个对象：同样规模的工作，40 个小组约 0.3 s，
+  一个 12 万对象的组约 8 s。
+* 库里有**有界的组缓存**。走引用链时复用它才是省时间的关键；如果每处理完一组就把结果丢掉
+  （批量导出可能会这样），大组就会被反复重解析。
+
+## 格式要点
+
+* `ObjectId` = `(组号, 组内下标)`，组号通过组表解析。
+* 指针 = 1 个 presence 字节 + 组 link 表里的一条记录
+  （大端 7 位一组的 varint，首字节 `0x40` 表示带组字段）。
+* 字符串是「长度 + CRC32 校验」前缀；枚举按声明的字节宽度读取。
+* 回调（`ExtraBinaryDataHolder` / `MsgReadBinary`）**会被派生类继承**，并且必须写进类型的扩展字段
+  （`extensions.json`）—— 因为 odradek 的 JSON 导出正是沿着这些字段走的。
+* 精确复刻了 Java 的 `Float.toString` / `Double.toString` 排版（例如 `7.796708E-4`）。
+
+## 已知限制
+
+1. **`PhysicsRagdollResource` 与 `FacialRigSettingWithLODResource` 两个回调尚未移植**
+   （需要 Jolt / RigLogic）。含这两个对象的组会读到该对象为止然后**截断**，
+   其后同组对象都取不到。程序会明确报出 `N object(s) past a truncation`。
+   `PhysicsShapeResource` **已经**移植。
+2. **link 游标缺陷**：`group 31127` 从对象 `3386` 起，会多消费一条 link，导致该组之后所有指针整体错开一个。
+   现象是 `SkeletonAnimationResource` 的 `[1]Skeleton` 属性被读了两次。复现：
+
+   ```
+   ODRADEKSHARP_TRACE_LINKS=1 odradeksharp read <游戏目录> 31127:3386 --json --no-subgroups
+   ```
+
+   判据（odradek 自己建的 link 数据库 `%LOCALAPPDATA%\Odradek\links-*.db`）：
+   对象 `31127:3386` 恰好两个指针 —— `[attr1] -> 77626:2164`、`[attr7] -> 31127:1159`。
+3. `cptr` 指针输出为 `<cptr to 组:下标>`；odradek 的 `CPtr` 没有重写 `toString()`，
+   会打印不可复刻的 Java 对象身份串。
+
+## 许可
+
+**GPL-3.0**：本项目是 odradek 的衍生作品，而 odradek 采用 GPL-3.0。详见 `LICENSE`。
+
+`Data/` 里的类型定义来自游戏，分发方式与 odradek 一致。
