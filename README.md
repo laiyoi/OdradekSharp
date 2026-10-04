@@ -7,6 +7,10 @@ the streaming graph, the RTTI type system and the object/pointer/link model.
 It is a *reader*, not a re-implementation of the GUI. Its output is meant to be
 **byte-identical** to odradek's own JSON export, and that is what it is tested against.
 
+The Java reference implementation is included as a git submodule at
+[`external/odradek`](https://github.com/ShadelessFox/odradek) (pinned to a commit), so the code being
+ported is right next to the port. It is empty unless you clone with `--recurse-submodules`.
+
 [中文说明](#中文说明) · [状态](#status) · [构建](#build) · [用法](#usage) · [性能](#performance) · [已知限制](#known-limitations) · [许可](#license)
 
 ## Status
@@ -35,6 +39,10 @@ defect, described under *Known limitations* below.
 ## Build
 
 ```
+git clone --recurse-submodules https://github.com/laiyoi/OdradekSharp.git
+# already cloned:
+git submodule update --init --recursive
+
 dotnet build -c Release
 # -> bin/Release/net10.0/odradeksharp.exe
 ```
@@ -133,6 +141,9 @@ RTTI 类型系统、对象/指针/link 模型。
 
 它是一个**读取器**，不是 GUI 的复刻。衡量标准只有一条：导出的 JSON 与 odradek 自己的导出**逐字节相同**。
 
+Java 参考实现在 [`external/odradek`](https://github.com/ShadelessFox/odradek) 以 **git 子模块**方式引入
+（固定在某个 commit），被移植的源码就在移植代码旁边。**不写 `--recurse-submodules` 克隆的话，这个目录是空的。**
+
 ## 状态
 
 | 类型 | 与 odradek 导出比对 |
@@ -157,6 +168,10 @@ RTTI 类型系统、对象/指针/link 模型。
 ## 构建
 
 ```
+git clone --recurse-submodules https://github.com/laiyoi/OdradekSharp.git
+# 已经克隆过的话：
+git submodule update --init --recursive
+
 dotnet build -c Release
 # -> bin/Release/net10.0/odradeksharp.exe
 ```

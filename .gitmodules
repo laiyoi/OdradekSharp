@@ -1,0 +1,3 @@
+[submodule "external/odradek"]
+	path = external/odradek
+	url = https://github.com/ShadelessFox/odradek.git
