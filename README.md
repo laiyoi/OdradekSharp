@@ -17,15 +17,15 @@ ported is right next to the port. It is empty unless you clone with `--recurse-s
 
 | Type | Verified against odradek's export |
 |---|---|
-| `WwiseWemResource` | 400/400, 7,816/7,816 byte-identical |
-| `WwiseID` | 401/401 byte-identical |
+| `WwiseWemResource` | **7,838/7,838 byte-identical** |
+| `WwiseID` | 400/400 byte-identical |
 | `WwiseBankResource` | 74/74 byte-identical |
-| `GraphSoundResource` | 394/400 |
-| `GraphProgramResource` | 395/401 |
-| `NodeConstantsResource` | 390/401 |
+| `GraphSoundResource` | 400/400 byte-identical |
+| `GraphProgramResource` | 401/401 byte-identical |
+| `NodeConstantsResource` | 400/400 byte-identical |
 
-The remaining diffs are all objects that contain pointers, and all of them are caused by one known
-defect, described under *Known limitations* below.
+The previously reported diffs on the three pointer-bearing types (394/400, 395/401, 390/401) were
+caused by one reader defect and are gone; see *Known limitations*.
 
 ## Requirements
 
@@ -75,9 +75,9 @@ Measured on one machine, game data on a local SSD, 4 threads:
 
 | Task | Time | Peak memory |
 |---|---|---|
-| All 7,838 `WwiseWemResource` | ~30 s | ~4.9 GB |
-| 400 `GraphSoundResource` (38 groups) | 0.6 s | ~1.0 GB |
-| 400 `WwiseID` (48 groups) | 0.3 s | ~0.9 GB |
+| All 7,838 `WwiseWemResource` | ~45 s | ~3.9 GB |
+| 400 `GraphSoundResource` (30 groups) | 0.7 s | ~0.9 GB |
+| 400 `WwiseID` (33 groups) | 0.4 s | ~0.9 GB |
 | `read group 499 object 1173` (group 499 = 124,219 objects, one 286 MB span) | 1.2 s | ~1.4 GB |
 
 Notes on where the time actually goes:
@@ -104,20 +104,21 @@ See the source for the details; the important ones:
 
 ## Known limitations
 
-1. **`PhysicsRagdollResource` and `FacialRigSettingWithLODResource` callbacks are not ported**
-   (they need Jolt / RigLogic). A group that contains one of them is read up to that object and then
-   truncated; every later object in that group is unavailable. This is reported explicitly as
-   `N object(s) past a truncation`. `PhysicsShapeResource` *is* ported.
-2. **Link cursor defect.** In group `31127`, starting at object `3386`, the reader consumes one extra
-   link entry, which shifts every later pointer in that group by one. Symptom: the `[1]Skeleton`
-   attribute of `SkeletonAnimationResource` is read twice. Reproduce with:
-
-   ```
-   ODRADEKSHARP_TRACE_LINKS=1 odradeksharp read <gameDir> 31127:3386 --json --no-subgroups
-   ```
-
-   The ground truth (odradek's own link database, `%LOCALAPPDATA%\Odradek\links-*.db`) says object
-   `31127:3386` has exactly two pointers: `[attr1] -> 77626:2164` and `[attr7] -> 31127:1159`.
+1. **All DS2 `MsgReadBinary` callbacks used by this game are ported**, including
+   `PhysicsShapeResource` and `PhysicsRagdollResource` (Jolt) and
+   `FacialRigSettingWithLODResource` (RigLogic). Nothing truncates on the real data: exporting every
+   `WwiseWemResource` reports `0 object(s) past a truncation`, and the sound-chain walk over all
+   5,700 `GraphSoundResource` reports no truncated group either. A group that *did* hit an
+   unimplemented callback would still be read up to that object and reported as
+   `N object(s) past a truncation` / listed in `soundmap_report.txt`.
+2. **Fixed: the link cursor used to desynchronize on re-parsed objects.** A span is read through a
+   sliding window; when an object ran past the window it was re-parsed from its start, but the
+   group-wide link/locator cursors were not rewound, so the aborted attempt's links stayed consumed.
+   One retry = one extra link = every later pointer in that group shifted by one.
+   The trigger was reproducible: group `31127`, object `3386` is a 323 KB `SkeletonAnimationResource`
+   spanning bytes `8,151,140..8,474,207`, i.e. it straddles the 8 MiB window boundary.
+   `StreamingObjectReader` now snapshots the cursors per object and rewinds them on the retry.
+   Verified by exporting `31127:3386` and diffing against `odradek export` itself: 15/15 fields equal.
 3. `cptr` pointers are rendered as `<cptr to G:I>`; odradek has no `toString()` override for `CPtr`,
    so it prints a Java identity string that cannot be reproduced.
 
@@ -148,14 +149,14 @@ Java 参考实现在 [`external/odradek`](https://github.com/ShadelessFox/odrade
 
 | 类型 | 与 odradek 导出比对 |
 |---|---|
-| `WwiseWemResource` | 400/400、7,816/7,816 逐字节相同 |
-| `WwiseID` | 401/401 逐字节相同 |
+| `WwiseWemResource` | **7,838/7,838 逐字节相同** |
+| `WwiseID` | 400/400 逐字节相同 |
 | `WwiseBankResource` | 74/74 逐字节相同 |
-| `GraphSoundResource` | 394/400 |
-| `GraphProgramResource` | 395/401 |
-| `NodeConstantsResource` | 390/401 |
+| `GraphSoundResource` | 400/400 逐字节相同 |
+| `GraphProgramResource` | 401/401 逐字节相同 |
+| `NodeConstantsResource` | 400/400 逐字节相同 |
 
-剩下的差异全部出现在**含指针**的对象上，且成因只有一个（见下面"已知限制"第 2 条）。
+之前报的三个含指针类型的差异（394/400、395/401、390/401）出自同一个读取器缺陷，现已修复，见「已知限制」。
 
 ## 环境要求
 
@@ -204,9 +205,9 @@ odradeksharp dump "K:\...\DEATH STRANDING 2 - ON THE BEACH" WwiseWemResource ^
 
 | 任务 | 耗时 | 峰值内存 |
 |---|---|---|
-| 全部 7,838 个 `WwiseWemResource` | ~30 s | ~4.9 GB |
-| 400 个 `GraphSoundResource`（38 个组） | 0.6 s | ~1.0 GB |
-| 400 个 `WwiseID`（48 个组） | 0.3 s | ~0.9 GB |
+| 全部 7,838 个 `WwiseWemResource` | ~45 s | ~3.9 GB |
+| 400 个 `GraphSoundResource`（30 个组） | 0.7 s | ~0.9 GB |
+| 400 个 `WwiseID`（33 个组） | 0.4 s | ~0.9 GB |
 | `read 组 499 对象 1173`（组 499 = 124,219 个对象，单个 286 MB span） | 1.2 s | ~1.4 GB |
 
 时间到底花在哪：
@@ -229,19 +230,19 @@ odradeksharp dump "K:\...\DEATH STRANDING 2 - ON THE BEACH" WwiseWemResource ^
 
 ## 已知限制
 
-1. **`PhysicsRagdollResource` 与 `FacialRigSettingWithLODResource` 两个回调尚未移植**
-   （需要 Jolt / RigLogic）。含这两个对象的组会读到该对象为止然后**截断**，
-   其后同组对象都取不到。程序会明确报出 `N object(s) past a truncation`。
-   `PhysicsShapeResource` **已经**移植。
-2. **link 游标缺陷**：`group 31127` 从对象 `3386` 起，会多消费一条 link，导致该组之后所有指针整体错开一个。
-   现象是 `SkeletonAnimationResource` 的 `[1]Skeleton` 属性被读了两次。复现：
-
-   ```
-   ODRADEKSHARP_TRACE_LINKS=1 odradeksharp read <游戏目录> 31127:3386 --json --no-subgroups
-   ```
-
-   判据（odradek 自己建的 link 数据库 `%LOCALAPPDATA%\Odradek\links-*.db`）：
-   对象 `31127:3386` 恰好两个指针 —— `[attr1] -> 77626:2164`、`[attr7] -> 31127:1159`。
+1. **本游戏用到的 DS2 `MsgReadBinary` 回调已全部移植**，包括 `PhysicsShapeResource`、
+   `PhysicsRagdollResource`（Jolt）与 `FacialRigSettingWithLODResource`（RigLogic）。
+   真实数据上不再发生截断：全量导出 `WwiseWemResource` 报 `0 object(s) past a truncation`，
+   遍历全部 5,700 个 `GraphSoundResource` 的跳链也没有任何组被截断。
+   万一将来某组真的撞上未实现的回调，行为仍是「读到该对象为止」并明确报出
+   `N object(s) past a truncation` / 写进 `soundmap_report.txt`。
+2. **已修复：对象被重新解析时 link 游标会错位。** span 是用滑动窗口读的；某个对象越过窗口时，会
+   从对象起点重新解析，但**组级的 link / locator 游标没有回卷**，于是那次中止的尝试消耗掉的 link
+   被白算了一次。重试一次 = 多消费一条 link = 该组之后所有指针整体错开一个。
+   触发点可复现：组 `31127` 的对象 `3386` 是 323 KB 的 `SkeletonAnimationResource`，字节区间
+   `8,151,140..8,474,207`，正好横跨 8 MiB 的窗口边界。
+   现在 `StreamingObjectReader` 每个对象记一次游标快照，重试前回卷。
+   验证：导出 `31127:3386` 与 `odradek export` 自己导出的结果比对，15/15 个字段完全相等。
 3. `cptr` 指针输出为 `<cptr to 组:下标>`；odradek 的 `CPtr` 没有重写 `toString()`，
    会打印不可复刻的 Java 对象身份串。
 

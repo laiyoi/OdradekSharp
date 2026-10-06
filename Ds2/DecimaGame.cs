@@ -128,11 +128,14 @@ public sealed class DecimaGame : IDisposable
     /// <summary>
     /// Reads a group keeping only the objects at the given indices (the rest are parsed and dropped).
     /// Used by the exporter so a huge group does not have to stay in memory.
+    /// <paramref name="collectPayload"/> = false also drops the bulk payloads (big primitive arrays) of
+    /// the wanted objects — the layout is still parsed exactly, only the materialized arrays are dropped.
     /// </summary>
-    public IReadOnlyList<TypedObject> ReadGroupFiltered(int groupId, HashSet<int> wanted, bool readSubgroups)
+    public IReadOnlyList<TypedObject> ReadGroupFiltered(int groupId, HashSet<int> wanted, bool readSubgroups,
+        bool collectPayload = true)
     {
         var reader = _threadReaders.Value!;
-        var result = reader.ReadGroupFiltered(groupId, wanted, readSubgroups);
+        var result = reader.ReadGroupFiltered(groupId, wanted, readSubgroups, collectPayload);
         _validCounts[groupId] = result.ValidCount;
         return result.Objects;
     }

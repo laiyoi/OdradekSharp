@@ -50,22 +50,27 @@ public sealed class StreamingObjectReader(RttiReader reader, StreamingGraph grap
     /// is fully parsed (the objects are still parsed — that is the only way to find object boundaries —
     /// but their object graphs become garbage instead of being retained). Filtered results are never
     /// cached, because they are only valid for the requested index set.
+    ///
+    /// <paramref name="collectPayload"/> = false additionally drops the *bulk payloads* (big primitive
+    /// arrays, byte buffers) of the wanted objects themselves. The byte layout is still parsed exactly —
+    /// only the materialized arrays are dropped — which is what a caller needs when it only looks at a few
+    /// scalar/pointer fields. Leave it on when a container field must be inspected.
     /// </summary>
-    public GroupResult ReadGroupFiltered(int id, HashSet<int> wanted, bool readSubgroups)
-        => ReadGroup(id, [], readSubgroups, wanted);
+    public GroupResult ReadGroupFiltered(int id, HashSet<int> wanted, bool readSubgroups, bool collectPayload = true)
+        => ReadGroup(id, [], readSubgroups, wanted, collectPayload);
 
     private GroupResult ReadGroup(int id, Dictionary<int, GroupResult> cache, bool readSubgroups,
-        HashSet<int>? wanted = null)
+        HashSet<int>? wanted = null, bool collectPayload = true)
     {
         var group = _graph.GetGroup(id); // throws KeyNotFoundException like odradek's "Group not found"
         if (wanted is null && _cache.TryGetValue(id, out var cached)) return cached;
-        var result = ReadGroupInternal(group, readSubgroups, wanted);
+        var result = ReadGroupInternal(group, readSubgroups, wanted, collectPayload);
         if (wanted is null) Store(group.Id, result);
         return result;
     }
 
     private GroupResult ReadGroupInternal(StreamingGraph.Group group, bool readSubgroups,
-        HashSet<int>? wanted = null)
+        HashSet<int>? wanted = null, bool collectPayload = true)
     {
         var subGroups = new List<GroupResult>(group.SubGroups.Count);
         if (readSubgroups)
@@ -90,7 +95,7 @@ public sealed class StreamingObjectReader(RttiReader reader, StreamingGraph grap
         _resolveLocators = true; // locators are group-local: resolve even when subgroups are skipped
 
         if (wanted is null && _cache.TryGetValue(group.Id, out var cached)) return cached;
-        var result = ReadSingleGroup(group, wanted);
+        var result = ReadSingleGroup(group, wanted, collectPayload);
         if (wanted is null) Store(group.Id, result);
         return result;
     }
@@ -121,7 +126,8 @@ public sealed class StreamingObjectReader(RttiReader reader, StreamingGraph grap
     public int SpanWindowBytes { get; set; } = 8 * 1024 * 1024;
 
     /// <summary>Port of StreamingObjectReader.readSingleGroup (:100-135).</summary>
-    private GroupResult ReadSingleGroup(StreamingGraph.Group group, HashSet<int>? wanted = null)
+    private GroupResult ReadSingleGroup(StreamingGraph.Group group, HashSet<int>? wanted = null,
+        bool collectPayload = true)
     {
         var objects = new List<TypedObject>(group.Types.Count);
         foreach (var type in group.Types) objects.Add(new TypedObject { Type = type });
@@ -152,32 +158,46 @@ public sealed class StreamingObjectReader(RttiReader reader, StreamingGraph grap
                 obj.Id = new ObjectId(group.Id, index);
                 if (LinkCursor.Trace) LinkCursor.TraceObject = index;
                 var start = spanReader.Position;
-                _reader.CollectPayload = wanted is null || wanted.Contains(index);
-                try
+                // Cursor marks must be taken once per object (not per attempt): an attempt that ran past
+                // the window has already consumed links/locators, and the retry has to start from here.
+                var linkMark = _links!.Position;
+                var locatorMark = _locatorIndex;
+                _reader.CollectPayload = wanted is null || (collectPayload && wanted.Contains(index));
+                while (true)
                 {
-                    _reader.FillCompound(obj.Type, spanReader, obj);
-                }
-                catch (EndOfStreamException) when (loaded < span.Length)
-                {
-                    // The object runs past the window: grow it and re-parse from the object start.
-                    var grown = Math.Min(span.Length, loaded + Math.Max(SpanWindowBytes, loaded));
-                    buffer = data.Read(span.Offset, grown);
-                    loaded = buffer.Length;
-                    spanReader = new BinaryReader(buffer) { Position = start };
-                    continue; // same index, retry
-                }
-                catch (Exception e)
-                {
-                    // The object's size is unknown, so every later object in the span is desynchronized.
-                    // Keep what was read successfully and report the group as truncated.
-                    if (TraceEnabled) Trace.Add((index, obj.Type.Name, start, spanReader.Position, file, span.Length));
-                    var message = $"group {group.Id} truncated at object [{index}] {obj.Type.Name}: {e.Message}";
-                    Warnings.Add(message);
-                    Console.Error.WriteLine("  " + message);
-                    _reader.CollectPayload = true;
-                    _currentGroup = result with { ValidCount = index };
-                    _reader.Context = null;
-                    return _currentGroup;
+                    try
+                    {
+                        _reader.FillCompound(obj.Type, spanReader, obj);
+                        break;
+                    }
+                    catch (EndOfStreamException) when (loaded < span.Length)
+                    {
+                        // The object runs past the window: grow it and re-parse from the object start.
+                        // Both cursors MUST be rewound first. They are group-wide and sequential, so a
+                        // retry that keeps the aborted attempt's progress silently consumes one link per
+                        // retry for this object and shifts every later pointer in the group by that much
+                        // (this is what corrupted group 31127 from object 3386 on: a 323 KB object
+                        // straddling the 8 MiB window boundary consumed its Skeleton link twice).
+                        var grown = Math.Min(span.Length, loaded + Math.Max(SpanWindowBytes, loaded));
+                        buffer = data.Read(span.Offset, grown);
+                        loaded = buffer.Length;
+                        spanReader = new BinaryReader(buffer) { Position = start };
+                        _links.Seek(linkMark);
+                        _locatorIndex = locatorMark;
+                    }
+                    catch (Exception e)
+                    {
+                        // The object's size is unknown, so every later object in the span is desynchronized.
+                        // Keep what was read successfully and report the group as truncated.
+                        if (TraceEnabled) Trace.Add((index, obj.Type.Name, start, spanReader.Position, file, span.Length));
+                        var message = $"group {group.Id} truncated at object [{index}] {obj.Type.Name}: {e.Message}";
+                        Warnings.Add(message);
+                        Console.Error.WriteLine("  " + message);
+                        _reader.CollectPayload = true;
+                        _currentGroup = result with { ValidCount = index };
+                        _reader.Context = null;
+                        return _currentGroup;
+                    }
                 }
                 if (TraceEnabled)
                     Trace.Add((index, obj.Type.Name, start, spanReader.Position, file, span.Length));

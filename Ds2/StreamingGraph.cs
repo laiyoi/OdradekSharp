@@ -233,6 +233,12 @@ public sealed class LinkCursor(byte[] table, int position)
     private int _position = position;
     public int Position => _position;
 
+    /// <summary>
+    /// Rewinds the cursor. Used when an object is re-parsed after the span window grew: the aborted
+    /// attempt already consumed links, and re-parsing the same object must not consume them twice.
+    /// </summary>
+    public void Seek(int position) => _position = position;
+
     public bool HasNext => _position < table.Length;
 
     public GraphLink Next()
